@@ -10,6 +10,9 @@ use RuntimeException;
 class Allowlist implements BMO
 {
 
+    public $db;  // Database from FreePBX
+
+
     public function __construct($freepbx = null)
     {
         if ($freepbx == null)
@@ -17,6 +20,10 @@ class Allowlist implements BMO
             throw new RuntimeException('Not given a FreePBX Object');
         }
         $this->FreePBX = $freepbx;
+        //$this->db = $this->FreePBX->astman;
+    	$this->db = $freepbx->Database;
+
+
         $this->astman = $this->FreePBX->astman;
 
         if (false)
@@ -30,6 +37,17 @@ class Allowlist implements BMO
             _('Adds the last caller to the Allowlist Module.  All calls from that number to the system will be allowed to proceed normally.');
         }
     }
+
+    public function checkDbConnection() {
+        // Simple query to check if the connection is alive
+        $query = "SELECT 1";
+        $result = $this->db->query($query);
+
+        if (!$result) {
+            throw new RuntimeException('Cannot query MariaDB, the database connection might have failed.');
+        }
+    }
+
 
     public function ajaxRequest($req, &$setting)
     {
@@ -569,28 +587,23 @@ class Allowlist implements BMO
      */
     public function getAllowlist()
     {
-        if ($this->astman->connected())
-        {
-            $list = $this->astman->database_show('allowlist');
-            $allowlisted = array();
-            foreach ($list as $k => $v)
-            {
-                if ($k == '/allowlist/dest' || $k == '/allowlist/pause' || $k == '/allowlist/knowncallers' || substr($k, 0, 18) == '/allowlist/autoadd' || substr($k, 0, 14) == '/allowlist/did')
-                {
-                    continue;
-                }
-                $numbers = substr($k, 11);
-                $allowlisted[] = array(
-                    'number' => $numbers,
-                    'description' => $v
-                );
-            }
-            return $allowlisted;
+        $this->checkDbConnection();
+        
+        // Retrieve the allowlist entries from the database
+        $query = "SELECT number, description FROM allowlist";
+        $result = $this->db->query($query);
+        $allowlisted = array();
+
+        // Loop through the result set and format the data
+        while ($row = $result->fetch_assoc()) {
+            $allowlisted[] = array(
+                'number' => $row['number'],
+                'description' => $row['description']
+            );
         }
-        else
-        {
-            throw new RuntimeException('Cannot connect to Asterisk Manager, is Asterisk running?');
-        }
+
+        // Return the allowlist in the same structure as before
+        return $allowlisted;       
     }
 
     /**
@@ -599,16 +612,18 @@ class Allowlist implements BMO
      */
     public function numberAdd($post)
     {
-        if ($this->astman->connected())
-        {
-            $post['description'] == '' ? $post['description'] = '1' : $post['description'];
-            // $this->astman->database_put('allowlist', $post['number'], $post['description']);
-            $this->astman->database_put('allowlist', $post['number'], htmlentities($post['description'], ENT_COMPAT | ENT_HTML401, "UTF-8"));
+        $this->checkDbConnection();
+
+        if (empty($post['description'])) {
+            $post['description'] = '1';
         }
-        else
-        {
-            throw new RuntimeException('Cannot connect to Asterisk Manager, is Asterisk running?');
-        }
+
+        $description = htmlentities($post['description'], ENT_COMPAT | ENT_HTML401, "UTF-8");
+        $query = "INSERT INTO allowlist (number, description) VALUES (?, ?)";
+        $stmt = $this->db->prepare($query);
+        $stmt->bind_param("ss", $post['number'], $description);
+        $stmt->execute();
+
         return $post['number'];
     }
 
@@ -619,14 +634,16 @@ class Allowlist implements BMO
      */
     public function numberDel($number)
     {
-        if ($this->astman->connected())
-        {
-            return ($this->astman->database_del('allowlist', $number));
-        }
-        else
-        {
-            throw new RuntimeException('Cannot connect to Asterisk Manager, is Asterisk running?');
-        }
+        $this->checkDbConnection();
+
+        $query = "DELETE FROM allowlist WHERE number = ?";
+
+        // Prepare and bind the parameter to the query
+        $stmt = $this->db->prepare($query);
+        $stmt->bind_param("s", $number);
+    
+        // Execute the query and check if the number was deleted
+        return $stmt->execute();        
     }
 
     /**
@@ -636,16 +653,9 @@ class Allowlist implements BMO
      */
     public function numberBlock($post)
     {
-        if ($this->astman->connected())
-        {
-           // $this->FreePBX->Blacklist->numberAdd($post);
-            $this->FreePBX->Blacklist->numberAdd($post);
-            return ($this->numberDel($post['number']));
-        }
-        else
-        {
-            throw new RuntimeException('Cannot connect to Asterisk Manager, is Asterisk running?');
-        }
+        $this->FreePBX->Blacklist->numberAdd($post);
+        return ($this->numberDel($post['number']));
+        
     }
 
     /**
@@ -655,22 +665,19 @@ class Allowlist implements BMO
      */
     public function destinationSet($dest)
     {
-        if ($this->astman->connected())
-        {
-            $this->astman->database_del('allowlist', 'dest');
-            if (!empty($dest))
-            {
-                return $this->astman->database_put('allowlist', 'dest', $dest);
-            }
-            else
-            {
-                return true;
-            }
-        }
-        else
-        {
-            throw new RuntimeException('Cannot connect to Asterisk Manager, is Asterisk running?');
-        }
+        // If destination is not empty, insert or update it in the config table
+        if (!empty($dest)) {
+            $query = "REPLACE INTO allowlist_config (name, value) VALUES (?, ?)";
+            $stmt = $this->db->prepare($query);
+            $stmt->bind_param("ss", 'dest', $dest);
+            return $stmt->execute();
+        } else {
+            // If empty, delete the existing record
+            $query = "DELETE FROM allowlist_config WHERE name = ?";
+            $stmt = $this->db->prepare($query);
+            $stmt->bind_param("s", 'dest');
+            return $stmt->execute();
+        }        
     }
 
     /**
@@ -679,14 +686,18 @@ class Allowlist implements BMO
      */
     public function destinationGet()
     {
-        if ($this->astman->connected())
-        {
-            return $this->astman->database_get('allowlist', 'dest');
+        $this->checkDbConnection();
+
+        $query = "SELECT value FROM allowlist_config WHERE name = ?";
+        $stmt = $this->db->prepare($query);
+        $stmt->bind_param("s", 'dest');
+        $stmt->execute();
+        
+        $result = $stmt->get_result();
+        if ($row = $result->fetch_assoc()) {
+            return $row['value'];
         }
-        else
-        {
-            throw new RuntimeException('Cannot connect to Asterisk Manager, is Asterisk running?');
-        }
+        return ''; // Return empty string if no value is set
     }
 
 
@@ -696,37 +707,59 @@ class Allowlist implements BMO
      */
     public function pauseSet($pause)
     {
-        if ($this->astman->connected())
-        {
-            // Remove filtering for pauseed/unknown cid
-            $this->astman->database_del('allowlist', 'pause');
-            // Add it back if it's checked
-            if (!empty($pause))
-            {
-                $secs = strtotime(date('Y-m-d H:i:s')) + 86400;
-                $this->astman->database_put('allowlist', 'pause', $secs);
-            }
+        $this->checkDbConnection();
+        
+        if (!empty($pause)) {
+            // Set the pause with a future timestamp (24 hours later in this case)
+            $secs = strtotime(date('Y-m-d H:i:s')) + 86400; // Set it for 24 hours later
+            $query = "REPLACE INTO allowlist_config (name, value) VALUES (?, ?)";
+            $stmt = $this->db->prepare($query);
+            $stmt->bind_param("ss", 'pause', $secs);
+            return $stmt->execute();
+        } else {
+            // Remove any pause
+            $query = "DELETE FROM allowlist_config WHERE name = ?";
+            $stmt = $this->db->prepare($query);
+            $stmt->bind_param("s", 'pause');
+            return $stmt->execute();
         }
-        else
-        {
-            throw new RuntimeException('Cannot connect to Asterisk Manager, is Asterisk running?');
-        }
+        
     }
 
     /**
      * Get status of pause flag
      * @return string 1 if paused, 0 otherwise
+     * 
+     * Side effect: If the pause has expired, it will be removed from the DB
      */
     public function pauseGet()
     {
-        if ($this->astman->connected())
-        {
-            return $this->astman->database_get('allowlist', 'pause') != 0;
+        $this->checkDbConnection();
+
+        $query = "SELECT value FROM allowlist_config WHERE name = ?";
+        $stmt = $this->db->prepare($query);
+        $stmt->bind_param("s", 'pause');
+        $stmt->execute();
+    
+        $result = $stmt->get_result();
+        if ($row = $result->fetch_assoc()) {
+            $pause_end_time = $row['value'];
+    
+            // If the current time is before the pause end time, it's paused
+            if ($pause_end_time > time()) {
+                return '1'; // Return '1' if still paused
+            } else {
+                // If the pause has expired, delete the pause entry
+                $deleteQuery = "DELETE FROM allowlist_config WHERE name = ?";
+                $deleteStmt = $this->db->prepare($deleteQuery);
+                $deleteStmt->bind_param("s", 'pause');
+                $deleteStmt->execute();
+    
+                return '0'; // Return '0' if the pause has expired or was removed
+            }
         }
-        else
-        {
-            throw new RuntimeException('Cannot connect to Asterisk Manager, is Asterisk running?');
-        }
+    
+        return '0'; // Return '0' if no pause value is set
     }
 
 
@@ -736,20 +769,18 @@ class Allowlist implements BMO
      */
     public function allowknowncallersSet($knowncallers)
     {
-        if ($this->astman->connected())
-        {
-            // Remove filtering for knowncallers cid
-            $this->astman->database_del('allowlist', 'knowncallers');
-            // Add it back if it's checked
-            if (!empty($knowncallers))
-            {
-                $this->astman->database_put('allowlist', 'knowncallers', '1');
-            }
-        }
-        else
-        {
-            throw new RuntimeException('Cannot connect to Asterisk Manager, is Asterisk running?');
-        }
+        if (!empty($knowncallers)) {
+            $query = "REPLACE INTO allowlist_config (name, value) VALUES (?, ?)";
+            $stmt = $this->db->prepare($query);
+            $stmt->bind_param("ss", 'knowncallers', '1');
+            return $stmt->execute();
+        } else {
+            // Remove the setting for knowncallers
+            $query = "DELETE FROM allowlist_config WHERE name = ?";
+            $stmt = $this->db->prepare($query);
+            $stmt->bind_param("s", 'knowncallers');
+            return $stmt->execute();
+        }        
     }
 
     /**
@@ -758,14 +789,19 @@ class Allowlist implements BMO
      */
     public function allowknowncallersGet()
     {
-        if ($this->astman->connected())
-        {
-            return $this->astman->database_get('allowlist', 'knowncallers');
+        $this->checkDbConnection();
+        
+        $query = "SELECT value FROM allowlist_config WHERE name = ?";
+        $stmt = $this->db->prepare($query);
+        $stmt->bind_param("s", 'knowncallers');
+        $stmt->execute();
+    
+        $result = $stmt->get_result();
+        if ($row = $result->fetch_assoc()) {
+            return $row['value'] == '1'; // Return true if allowed, false otherwise
         }
-        else
-        {
-            throw new RuntimeException('Cannot connect to Asterisk Manager, is Asterisk running?');
-        }
+    
+        return false; // Default to false if no value is set            
     }
 
     //BulkHandler hooks
@@ -848,148 +884,107 @@ class Allowlist implements BMO
 
     public function didAdd($did, $cid)
     {
-        if ($this->astman->connected())
-        {
-            // Add in did/cid pair
-            $exten = $did . ($cid == "" ? "" : '/' . $cid);
-            $this->astman->database_put('allowlist', 'did/' . $exten, true);
-        }
-        else
-        {
-            throw new RuntimeException('Cannot connect to Asterisk Manager, is Asterisk running?');
-        }
+        $this->checkDbConnection();
+        
+        $query = "INSERT INTO allowlist_dids (DID, CID) VALUES (?, ?)";
+        $stmt = $this->db->prepare($query);
+        $cid = empty($cid) ? null : $cid;  // Set CID to null if empty
+        $stmt->bind_param("si", $did, $cid);
+        
+        return $stmt->execute();
     }
 
     public function didDelete($did, $cid)
     {
-        if ($this->astman->connected())
-        {
-            // Remove did/cid pair
-            $exten = $did . ($cid == "" ? "" : '/' . $cid);
-            $this->astman->database_del('allowlist', 'did/' . $exten);
-        }
-        else
-        {
-            throw new RuntimeException('Cannot connect to Asterisk Manager, is Asterisk running?');
-        }
+        $this->checkDbConnection();
+        
+        $query = "DELETE FROM allowlist_dids WHERE DID = ? AND CID = ?";
+        $stmt = $this->db->prepare($query);
+        $cid = empty($cid) ? null : $cid;  // Handle empty CID
+    
+        $stmt->bind_param("si", $did, $cid);
+        
+        return $stmt->execute();            
     }
 
     public function didIsSet($did, $cid)
     {
-        if ($this->astman->connected())
-        {
-            $exten = $did . ($cid == "" ? "" : '/' . $cid);
-            $var = $this->astman->database_get('allowlist', 'did/' . $exten);
-            if ($var)
-            {
-                return true;
-            }
-            else
-            {
-                return false;
-            }
-        }
-        else
-        {
-            throw new RuntimeException('Cannot connect to Asterisk Manager, is Asterisk running?');
-        }
+        $this->checkDbConnection();
+        
+        $query = "SELECT COUNT(*) FROM allowlist_dids WHERE DID = ? AND CID = ?";
+        $stmt = $this->db->prepare($query);
+        $cid = empty($cid) ? null : $cid;  // Handle empty CID
+        $stmt->bind_param("si", $did, $cid);
+        $stmt->execute();
+        $stmt->bind_result($count);
+        $stmt->fetch();
+    
+        return $count > 0;        
     }
-/******************
-    public function routeAdd($id)
-    {
-        if ($this->astman->connected())
-        {
-            //$this->astman->database_put('allowlist', 'autoadd/' . $id, true);
-            $this->astman->database_put('allowlist', 'autoadd/' . $id, "1,0,99");
-        }
-        else
-        {
-            throw new RuntimeException('Cannot connect to Asterisk Manager, is Asterisk running?');
-        }
-    }
-************************/
+
     public function routeAdd($id,$ld,$sd)
     {
-        if ($this->astman->connected())
-        {
-            $this->astman->database_put('allowlist', 'autoadd/' . $id, "1,$ld,$sd");
-        }
-        else
-        {
-            throw new RuntimeException('Cannot connect to Asterisk Manager, is Asterisk running?');
-        }
+        $this->checkDbConnection();
+
+        $query = "INSERT INTO allowlist_routes (routeid, digits_remove, digits_store) VALUES (?, ?, ?)";
+        $stmt = $this->db->prepare($query);
+        $stmt->bind_param("sii", $id, $ld, $sd);
+        
+        return $stmt->execute();        
     }
 
     public function routeDelete($id)
     {
-        if ($this->astman->connected())
-        {
-            $this->astman->database_del('allowlist', 'autoadd/' . $id);
-        }
-        else
-        {
-            throw new RuntimeException('Cannot connect to Asterisk Manager, is Asterisk running?');
-        }
+        $this->checkDbConnection();
+        
+        $query = "DELETE FROM allowlist_routes WHERE routeid = ?";
+        $stmt = $this->db->prepare($query);
+        $stmt->bind_param("s", $id);
+        
+        return $stmt->execute();
+            
     }
 
     public function routeIsSet($id)
     {
-        if ($this->astman->connected())
-        {
-            $var = $this->astman->database_get('allowlist', 'autoadd/' . $id);
-            if ($var)
-            {
-                return true;
-            }
-            else
-            {
-                return false;
-            }
-        }
-        else
-        {
-            throw new RuntimeException('Cannot connect to Asterisk Manager, is Asterisk running?');
-        }
+        $this->checkDbConnection();
+        
+        $query = "SELECT COUNT(*) FROM allowlist_routes WHERE routeid = ?";
+        $stmt = $this->db->prepare($query);
+        $stmt->bind_param("s", $id);
+        $stmt->execute();
+        $stmt->bind_result($count);
+        $stmt->fetch();
+    
+        return $count > 0;        
     }
 
     public function routeRemCount($id)
     {
-        if ($this->astman->connected())
-        {
-            $var = $this->astman->database_get('allowlist', 'autoadd/' . $id);
-            if (($var) && (str_contains($var, ",")) && (count(explode(",",$var)) > 1))
-            {
-                return explode(",",$var)[1];
-            }
-            else
-            {
-                return null;
-            }
-        }
-        else
-        {
-            throw new RuntimeException('Cannot connect to Asterisk Manager, is Asterisk running?');
-        }
+        $this->checkDbConnection();
+        
+        $query = "SELECT digits_remove FROM allowlist_routes WHERE routeid = ?";
+        $stmt = $this->db->prepare($query);
+        $stmt->bind_param("s", $id);
+        $stmt->execute();
+        $stmt->bind_result($digits_remove);
+        $stmt->fetch();
+    
+        return $digits_remove;            
     }
 
     public function routeStoCount($id)
     {
-        if ($this->astman->connected())
-        {
-            $var = $this->astman->database_get('allowlist', 'autoadd/' . $id);
-            if (($var) && (str_contains($var, ",")) && (count(explode(",",$var)) > 2))
-            {
-                return explode(",",$var)[2];
-            }
-            else
-            {
-                return null;
-            }
-        }
-        else
-        {
-            throw new RuntimeException('Cannot connect to Asterisk Manager, is Asterisk running?');
-        }
+        $this->checkDbConnection();
+        
+        $query = "SELECT digits_store FROM allowlist_routes WHERE routeid = ?";
+        $stmt = $this->db->prepare($query);
+        $stmt->bind_param("s", $id);
+        $stmt->execute();
+        $stmt->bind_result($digits_store);
+        $stmt->fetch();
+    
+        return $digits_store;            
     }
 
 }

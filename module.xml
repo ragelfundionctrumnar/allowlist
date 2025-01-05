@@ -44,5 +44,104 @@
                 </command>
         </console>
 	<database>
-	</database>
+        <table>
+            <name>allowlist</name>
+            <field>
+                <name>id</name>
+                <type>INT</type>
+                <null>false</null>
+                <default>auto_increment</default>
+                <key>primary</key>
+            </field>
+            <field>
+                <name>number</name>
+                <type>VARCHAR(20)</type>
+                <null>false</null>
+            </field>
+            <field>
+                <name>description</name>
+                <type>VARCHAR(255)</type>
+                <null>true</null>
+            </field>
+            <field>
+                <name>created_at</name>
+                <type>TIMESTAMP</type>
+                <null>false</null>
+                <default>CURRENT_TIMESTAMP</default>
+            </field>
+        </table>
+    <!-- Table for storing configuration settings (e.g., destination, pause, etc.) -->
+    <table>
+        <name>allowlist_config</name>
+        <field>
+            <name>id</name>
+            <type>INT</type>
+            <null>false</null>
+            <default>auto_increment</default>
+            <key>primary</key>
+        </field>
+        <field>
+            <name>name</name>
+            <type>VARCHAR(255)</type>
+            <null>false</null>
+        </field>
+        <field>
+            <name>value</name>
+            <type>VARCHAR(255)</type>
+            <null>false</null>
+        </field>
+    </table>
+
+    <!-- Table for storing routes -->
+    <table>
+        <name>allowlist_routes</name>
+        <field>
+            <name>id</name>
+            <type>INT</type>
+            <null>false</null>
+            <default>auto_increment</default>
+            <key>primary</key>
+        </field>
+        <field>
+            <name>routeid</name>
+            <type>VARCHAR(255)</type>
+            <null>false</null>
+        </field>
+        <field>
+            <name>digits_remove</name>
+            <type>INT</type>
+            <null>false</null>
+        </field>
+        <field>
+            <name>digits_store</name>
+            <type>INT</type>
+            <null>false</null>
+        </field>
+    </table>
+
+
+    <!-- Table for storing DIDs -->
+    <table>
+        <name>allowlist_dids</name>
+        <field>
+            <name>id</name>
+            <type>INT</type>
+            <null>false</null>
+            <default>auto_increment</default>
+            <key>primary</key>
+        </field>
+        <field>
+            <name>DID</name>
+            <type>VARCHAR(255)</type>
+            <null>false</null>
+        </field>
+        <field>
+            <name>CID</name>
+            <type>INT</type>
+            <null>true</null>
+        </field>
+    </table>
+
+    </database>
 </module>
+
